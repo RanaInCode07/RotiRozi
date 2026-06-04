@@ -1,0 +1,460 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Restaurant POS SaaS — Prisma Schema
+// Multi-tenant architecture with tenant_id isolation on all data models
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  TENANT_OWNER
+  OUTLET_MANAGER
+  BILLING_CLERK
+  KITCHEN_STAFF
+}
+
+enum TenantPlan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum TableStatus {
+  FREE
+  OCCUPIED
+  RESERVED
+  BLOCKED
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  PREPARING
+  READY
+  SERVED
+  BILLED
+  CANCELLED
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderSource {
+  POS
+  ZOMATO
+  SWIGGY
+  WEBSITE
+}
+
+enum KotItemStatus {
+  PENDING
+  SENT_TO_KOT
+  PREPARED
+  DISPATCHED
+}
+
+enum KotStatus {
+  OPEN
+  PREPARING
+  COMPLETED
+  CANCELLED
+}
+
+enum InventoryUnit {
+  GRAMS
+  ML
+  PIECES
+  KG
+  LITRE
+}
+
+enum StockTransactionType {
+  DEDUCTION
+  RESTOCK
+  ADJUSTMENT
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  WALLET
+  CREDIT
+}
+
+enum AggregatorPlatform {
+  ZOMATO
+  SWIGGY
+  DUNZO
+}
+
+// ─────────────────────────────────────────────
+// Tenant  (SaaS root entity)
+// ─────────────────────────────────────────────
+
+model Tenant {
+  id        String     @id @default(uuid())
+  name      String
+  plan      TenantPlan @default(FREE)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  deletedAt DateTime?
+
+  outlets  Outlet[]
+  users    User[]
+
+  @@map("tenants")
+}
+
+// ─────────────────────────────────────────────
+// Outlet  (a restaurant branch / location)
+// ─────────────────────────────────────────────
+
+model Outlet {
+  id        String    @id @default(uuid())
+  tenantId  String
+  name      String
+  address   String?
+  phone     String?
+  settings  Json      @default("{}")   // OutletSettings (taxRate, currency, etc.)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  tenant            Tenant              @relation(fields: [tenantId], references: [id])
+  users             User[]
+  categories        Category[]
+  menuItems         MenuItem[]
+  tables            RestaurantTable[]
+  orders            Order[]
+  kots              KOT[]
+  inventoryItems    InventoryItem[]
+  aggregatorConfigs AggregatorConfig[]
+
+  @@index([tenantId])
+  @@map("outlets")
+}
+
+// ─────────────────────────────────────────────
+// User  (staff member, scoped to a tenant)
+// ─────────────────────────────────────────────
+
+model User {
+  id               String    @id @default(uuid())
+  tenantId         String
+  outletId         String?   // null = has access to all outlets of the tenant
+  email            String
+  passwordHash     String
+  name             String
+  role             Role
+  isActive         Boolean   @default(true)
+  refreshTokenHash String?   // bcrypt hash stored for refresh-token validation
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  outlet  Outlet? @relation(fields: [outletId], references: [id])
+  orders  Order[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([tenantId, outletId])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// Category  (menu category, e.g. "Starters")
+// ─────────────────────────────────────────────
+
+model Category {
+  id        String    @id @default(uuid())
+  tenantId  String
+  outletId  String
+  name      String
+  sortOrder Int       @default(0)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  outlet    Outlet     @relation(fields: [outletId], references: [id])
+  menuItems MenuItem[]
+
+  @@index([tenantId])
+  @@index([tenantId, outletId])
+  @@map("categories")
+}
+
+// ─────────────────────────────────────────────
+// MenuItem
+// ─────────────────────────────────────────────
+
+model MenuItem {
+  id              String    @id @default(uuid())
+  tenantId        String
+  outletId        String
+  categoryId      String
+  name            String
+  shortcode       String    // e.g. "BRG1" — unique per outlet for quick search
+  description     String?
+  price           Decimal   @db.Decimal(10, 2)
+  imageUrl        String?
+  isAvailable     Boolean   @default(true)
+  isVeg           Boolean   @default(true)
+  preparationTime Int?      // minutes
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  outlet     Outlet      @relation(fields: [outletId], references: [id])
+  category   Category    @relation(fields: [categoryId], references: [id])
+  orderItems OrderItem[]
+  recipes    Recipe[]
+
+  @@unique([outletId, shortcode])
+  @@index([tenantId])
+  @@index([tenantId, outletId])
+  @@map("menu_items")
+}
+
+// ─────────────────────────────────────────────
+// RestaurantTable  (dine-in table)
+// ─────────────────────────────────────────────
+
+model RestaurantTable {
+  id        String      @id @default(uuid())
+  outletId  String
+  name      String      // e.g. "T1", "Table 5", "Rooftop-3"
+  capacity  Int         @default(4)
+  status    TableStatus @default(FREE)
+  floor     String?     // e.g. "Ground Floor", "First Floor"
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  outlet Outlet  @relation(fields: [outletId], references: [id])
+  orders Order[]
+
+  @@index([outletId])
+  @@map("restaurant_tables")
+}
+
+// ─────────────────────────────────────────────
+// Order
+// ─────────────────────────────────────────────
+
+model Order {
+  id               String      @id @default(uuid())
+  tenantId         String
+  outletId         String
+  tableId          String?
+  assignedUserId   String
+  status           OrderStatus @default(DRAFT)
+  orderType        OrderType   @default(DINE_IN)
+  source           OrderSource @default(POS)
+  externalOrderId  String?     // for Zomato/Swiggy orders
+  totalAmount      Decimal     @default(0) @db.Decimal(10, 2)
+  discountAmount   Decimal     @default(0) @db.Decimal(10, 2)
+  taxAmount        Decimal     @default(0) @db.Decimal(10, 2)
+  netAmount        Decimal     @default(0) @db.Decimal(10, 2)
+  notes            String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  deletedAt        DateTime?
+
+  outlet       Outlet          @relation(fields: [outletId], references: [id])
+  table        RestaurantTable? @relation(fields: [tableId], references: [id])
+  assignedUser User            @relation(fields: [assignedUserId], references: [id])
+  orderItems   OrderItem[]
+  kots         KOT[]
+  payments     Payment[]
+
+  @@index([tenantId])
+  @@index([tenantId, outletId])
+  @@index([outletId, status])
+  @@map("orders")
+}
+
+// ─────────────────────────────────────────────
+// OrderItem  (line item in an order)
+// ─────────────────────────────────────────────
+
+model OrderItem {
+  id          String        @id @default(uuid())
+  orderId     String
+  menuItemId  String
+  quantity    Int
+  unitPrice   Decimal       @db.Decimal(10, 2)
+  totalPrice  Decimal       @db.Decimal(10, 2)
+  notes       String?
+  kotStatus   KotItemStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  order    Order    @relation(fields: [orderId], references: [id])
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id])
+  kotItems KOTItem[]
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ─────────────────────────────────────────────
+// KOT  (Kitchen Order Ticket — one per fire)
+// ─────────────────────────────────────────────
+
+model KOT {
+  id        String    @id @default(uuid())
+  orderId   String
+  outletId  String
+  kotNumber Int       // auto-increment per outlet per day, handled in service
+  status    KotStatus @default(OPEN)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  order    Order     @relation(fields: [orderId], references: [id])
+  outlet   Outlet    @relation(fields: [outletId], references: [id])
+  kotItems KOTItem[]
+
+  @@index([outletId])
+  @@index([orderId])
+  @@map("kots")
+}
+
+// ─────────────────────────────────────────────
+// KOTItem  (individual item in a KOT)
+// ─────────────────────────────────────────────
+
+model KOTItem {
+  id          String        @id @default(uuid())
+  kotId       String
+  orderItemId String
+  quantity    Int
+  status      KotItemStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  kot       KOT       @relation(fields: [kotId], references: [id])
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id])
+
+  @@index([kotId])
+  @@map("kot_items")
+}
+
+// ─────────────────────────────────────────────
+// InventoryItem  (raw material / ingredient)
+// ─────────────────────────────────────────────
+
+model InventoryItem {
+  id                String        @id @default(uuid())
+  tenantId          String
+  outletId          String
+  name              String
+  unit              InventoryUnit
+  quantity          Decimal       @default(0) @db.Decimal(12, 3)
+  lowStockThreshold Decimal       @default(0) @db.Decimal(12, 3)
+  costPerUnit       Decimal?      @db.Decimal(10, 2)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  deletedAt         DateTime?
+
+  outlet            Outlet             @relation(fields: [outletId], references: [id])
+  recipes           Recipe[]
+  stockTransactions StockTransaction[]
+
+  @@index([tenantId])
+  @@index([tenantId, outletId])
+  @@map("inventory_items")
+}
+
+// ─────────────────────────────────────────────
+// Recipe  (maps a MenuItem to its ingredients)
+// ─────────────────────────────────────────────
+
+model Recipe {
+  id              String  @id @default(uuid())
+  menuItemId      String
+  inventoryItemId String
+  quantityRequired Decimal @db.Decimal(12, 3)
+
+  menuItem      MenuItem      @relation(fields: [menuItemId], references: [id])
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+
+  @@unique([menuItemId, inventoryItemId])
+  @@map("recipes")
+}
+
+// ─────────────────────────────────────────────
+// StockTransaction  (audit trail for inventory)
+// ─────────────────────────────────────────────
+
+model StockTransaction {
+  id              String               @id @default(uuid())
+  inventoryItemId String
+  type            StockTransactionType
+  quantity        Decimal              @db.Decimal(12, 3)
+  referenceOrderId String?             // null for manual restock/adjustment
+  notes           String?
+  createdAt       DateTime             @default(now())
+
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+
+  @@index([inventoryItemId])
+  @@map("stock_transactions")
+}
+
+// ─────────────────────────────────────────────
+// Payment  (split payments per order)
+// ─────────────────────────────────────────────
+
+model Payment {
+  id             String      @id @default(uuid())
+  orderId        String
+  mode           PaymentMode
+  amount         Decimal     @db.Decimal(10, 2)
+  transactionRef String?
+  paidAt         DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────────
+// AggregatorConfig  (per-outlet platform toggle)
+// ─────────────────────────────────────────────
+
+model AggregatorConfig {
+  id               String             @id @default(uuid())
+  outletId         String
+  platform         AggregatorPlatform
+  isOnline         Boolean            @default(false)
+  externalOutletId String?
+  webhookSecret    String?
+  settings         Json               @default("{}")
+  updatedAt        DateTime           @updatedAt
+
+  outlet Outlet @relation(fields: [outletId], references: [id])
+
+  @@unique([outletId, platform])
+  @@index([outletId])
+  @@map("aggregator_configs")
+}

@@ -1,0 +1,25 @@
+{
+  "name": "pet-p",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Restaurant Management System & POS SaaS",
+  "scripts": {
+    "backend:dev": "pnpm --filter backend start:dev",
+    "backend:build": "pnpm --filter backend build",
+    "backend:migrate": "pnpm --filter backend prisma:migrate",
+    "backend:studio": "pnpm --filter backend prisma:studio",
+    "pos-web:dev": "pnpm --filter pos-web dev",
+    "pos-web:build": "pnpm --filter pos-web build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "install:all": "pnpm install"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
